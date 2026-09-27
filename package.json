@@ -1,0 +1,13 @@
+{
+  "name": "transformers-battle-for-cybertron",
+  "version": "1.0.0",
+  "description": "2D-файтинг: Оптимус Прайм против десептиконов. Один HTML-файл, canvas, управление с клавиатуры и с планшета.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

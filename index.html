@@ -1,0 +1,995 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#05070d">
+<title>TRANSFORMERS: Battle for Cybertron</title>
+<style>
+  html,body{margin:0;height:100%;background:#05070d;color:#cdd6e4;
+    font-family:"Trebuchet MS",Arial,sans-serif;overflow:hidden;
+    overscroll-behavior:none;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;
+    -webkit-tap-highlight-color:transparent}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{background:#090d16;box-shadow:0 0 0 1px #1d2a44,0 20px 60px rgba(0,0,0,.8);
+    width:min(100vw, calc(100vh * 16 / 9));height:auto;touch-action:none}
+
+  /* ---------- экранное управление (планшет/телефон) ---------- */
+  #pad{position:fixed;inset:0;display:none;pointer-events:none;z-index:10;
+    --b:clamp(54px,13vmin,104px);   /* крупная кнопка */
+    --s:clamp(44px,11vmin,86px);    /* средняя */
+    --g:clamp(6px,2.5vmin,20px)}    /* отступ */
+  #pad.on{display:block}
+  #pad .btn{position:absolute;pointer-events:auto;touch-action:none;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;
+    background:rgba(20,32,56,.5);border:2px solid rgba(110,170,240,.45);
+    color:#dce7f7;font:bold clamp(9px,1.5vmin,13px)/1.05 "Trebuchet MS",Arial;border-radius:50%;
+    backdrop-filter:blur(2px);transition:background .06s,transform .06s}
+  #pad .btn.sq{border-radius:14px}
+  #pad .btn.act{background:rgba(70,130,210,.85);transform:scale(.93)}
+  #pad .lbl{font-size:clamp(7px,1.15vmin,10px);opacity:.7;font-weight:normal;margin-top:2px}
+
+  #bLeft {left:var(--g);                              bottom:var(--g);
+          width:var(--b);height:var(--b);font-size:calc(var(--b)*.34)}
+  #bRight{left:calc(var(--g)*2 + var(--b));           bottom:var(--g);
+          width:var(--b);height:var(--b);font-size:calc(var(--b)*.34)}
+  #bBlock{left:calc(var(--g)*1.5 + var(--b)*.5);      bottom:calc(var(--g)*2 + var(--b));
+          width:var(--s);height:var(--s);border-color:rgba(150,200,255,.5)}
+
+  #bLight{right:calc(var(--g)*2 + var(--b));          bottom:var(--g);
+          width:var(--b);height:var(--b);
+          border-color:rgba(255,190,110,.55);background:rgba(70,45,20,.5)}
+  #bHeavy{right:var(--g);                             bottom:calc(var(--g)*1.6 + var(--b)*.55);
+          width:var(--b);height:var(--b);
+          border-color:rgba(255,120,90,.55);background:rgba(80,30,25,.5)}
+  #bJump {right:calc(var(--g)*2 + var(--b));          bottom:calc(var(--g)*2 + var(--b));
+          width:var(--s);height:var(--s)}
+  #bTrans{right:var(--g);                             bottom:calc(var(--g)*3 + var(--b)*1.5);
+          width:calc(var(--b)*1.05);height:calc(var(--s)*.72);
+          border-color:rgba(130,240,200,.55);background:rgba(20,60,55,.5)}
+  #bSuper{right:calc(var(--g)*2 + var(--b));          bottom:calc(var(--g)*3 + var(--b) + var(--s));
+          width:var(--s);height:calc(var(--s)*.7);
+          border-color:rgba(255,225,100,.6);background:rgba(70,60,15,.45)}
+
+  #bFull{position:fixed;top:var(--g,10px);right:var(--g,10px);z-index:11;pointer-events:auto;
+    width:clamp(34px,7vmin,54px);height:clamp(34px,7vmin,54px);border-radius:10px;
+    background:rgba(20,32,56,.55);border:1px solid rgba(110,170,240,.4);
+    color:#9fb6d8;font-size:clamp(16px,3vmin,24px);display:none;
+    align-items:center;justify-content:center}
+  #pad.on ~ #bFull{display:flex}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="960" height="540"></canvas></div>
+
+<div id="pad">
+  <div class="btn" id="bLeft"  data-k="KeyA">◀</div>
+  <div class="btn" id="bRight" data-k="KeyD">▶</div>
+  <div class="btn" id="bBlock" data-k="KeyS">БЛОК</div>
+  <div class="btn" id="bJump"  data-k="KeyW">ПРЫЖОК</div>
+  <div class="btn" id="bLight" data-k="KeyJ">УДАР<span class="lbl">таран</span></div>
+  <div class="btn" id="bHeavy" data-k="KeyK">СИЛЬНЫЙ<span class="lbl">выстрел</span></div>
+  <div class="btn sq" id="bTrans" data-k="Space">ТРАНСФОРМ</div>
+  <div class="btn sq" id="bSuper" data-k="KeyL">СУПЕР</div>
+</div>
+<div id="bFull">⛶</div>
+<script>
+(() => {
+"use strict";
+
+const CV = document.getElementById('game');
+const X  = CV.getContext('2d');
+const W = 960, H = 540, FLOOR = 468, GRAV = 2300;
+const LEFT_WALL = 40, RIGHT_WALL = W - 40, CEIL = 260;
+const SC = 1.6;                              // масштаб спрайтов (риг ≈115 ед. → ~185 px)
+const OUT = '#10141f';                       // цвет контура спрайтов
+
+/* ------------------------------------------------------------------ ввод */
+const keys = {};
+const BLOCK_SCROLL = ['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'];
+addEventListener('keydown', e => {
+  if (BLOCK_SCROLL.includes(e.code)) e.preventDefault();
+  if (!keys[e.code]) keys[e.code + '_p'] = true;
+  keys[e.code] = true;
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+const pressed = c => !!keys[c + '_p'];
+const clearPresses = () => { for (const k in keys) if (k.endsWith('_p')) keys[k] = false; };
+let IS_TOUCH = false;                          // включается ниже, меняет подсказки на экранах
+
+/* ------------------------------------------------------------- ростер */
+const CHARS = {
+  optimus: {
+    name:'ОПТИМУС ПРАЙМ', faction:'auto', vehicle:'truck', vname:'ФУРА',
+    head:'optimus', chest:'window', weapon:'fist',
+    main:'#2f6fe0', alt:'#d0332f', metal:'#c2cad6', dark:'#26304a', visor:'#6fe3ff', beam:'#8fd8ff',
+    hp:110, spd:300, vspd:520, jump:860, pow:1.05, fly:false, rapid:false,
+    bio:'Лидер автоботов. Крепкий, бьёт тяжело.'
+  },
+  bumblebee: {
+    name:'БАМБЛБИ', faction:'auto', vehicle:'car', vname:'МАШИНА',
+    head:'bee', chest:'hood', weapon:'blaster',
+    main:'#f2c21a', alt:'#2f3135', metal:'#dbe1ea', dark:'#3b3418', visor:'#7fe9ff', beam:'#ffe066',
+    hp:88, spd:375, vspd:600, jump:980, pow:0.85, fly:false, rapid:false,
+    bio:'Разведчик. Очень быстрый, урон меньше.'
+  },
+  megatron: {
+    name:'МЕГАТРОН', faction:'decept', vehicle:'tank', vname:'ТАНК',
+    head:'megatron', chest:'core', weapon:'cannon',
+    main:'#8b93a1', alt:'#7c3aed', metal:'#5a6472', dark:'#232936', visor:'#ff5a5a', beam:'#c08bff',
+    hp:112, spd:288, vspd:500, jump:820, pow:1.15, fly:false, rapid:false,
+    bio:'Вождь десептиконов. Самый тяжёлый урон.'
+  },
+  starscream: {
+    name:'СТАРСКРИМ', faction:'decept', vehicle:'jet', vname:'ДЖЕТ',
+    head:'screamer', chest:'intake', weapon:'blaster',
+    main:'#c9d1de', alt:'#c0392b', metal:'#8e9aad', dark:'#2a3240', visor:'#ffd34d', beam:'#ff9f43',
+    hp:84, spd:345, vspd:560, jump:1000, pow:0.90, fly:true, rapid:false,
+    bio:'В форме джета ЛЕТАЕТ: W — тяга вверх.'
+  },
+  soundwave: {
+    name:'САУНДВЕЙВ', faction:'decept', vehicle:'drone', vname:'ДРОН',
+    head:'wave', chest:'deck', weapon:'sonic',
+    main:'#3b5bdb', alt:'#1c2233', metal:'#9aa6bb', dark:'#161b28', visor:'#ff4d4d', beam:'#66f0ff',
+    hp:100, spd:292, vspd:520, jump:840, pow:0.95, fly:false, rapid:true,
+    bio:'Соник-залпы: в форме дрона стреляет вдвое чаще.'
+  }
+};
+const ROSTER = Object.keys(CHARS);
+
+const ATK = {
+  light: { start:.07, active:.07, end:.12, dmg:6,  reach:72,  hh:40, kb:170, ky:-40,  stun:.22 },
+  heavy: { start:.19, active:.09, end:.28, dmg:15, reach:88,  hh:52, kb:430, ky:-360, stun:.42 },
+  super: { start:.30, active:.28, end:.45, dmg:30, reach:330, hh:70, kb:640, ky:-420, stun:.70 }
+};
+
+/* ------------------------------------------------------------- боец */
+class Fighter {
+  constructor(id, x, facing, isAI) {
+    this.setChar(id);
+    this.w = 96; this.h = 186;
+    this.reset(x, facing);
+    this.wins = 0;
+  }
+  setChar(id) { this.id = id; this.def = CHARS[id]; }
+  reset(x, facing) {
+    this.x = x; this.y = FLOOR; this.vx = 0; this.vy = 0;
+    this.facing = facing; this.maxhp = this.def.hp; this.hp = this.def.hp; this.energy = 0;
+    this.form = 'robot'; this.state = 'idle'; this.t = 0; this.dur = 0;
+    this.atk = null; this.hitDone = false; this.blocking = false;
+    this.onGround = true; this.tfCd = 0; this.shootCd = 0; this.flash = 0;
+    this.iframe = 0; this.walk = 0; this.aiT = 0; this.aiAct = null;
+  }
+  get speed()  { return this.form === 'robot' ? this.def.spd : this.def.vspd; }
+  get flying() { return this.form === 'vehicle' && this.def.fly; }
+  get busy()   { return this.state !== 'idle'; }
+  get invuln() { return this.state === 'super' || this.state === 'transform'; }
+  get canAct() { return this.onGround || this.flying; }
+  body() { return { x:this.x - this.w/2, y:this.y - this.h, w:this.w, h:this.h }; }
+  hitbox() {
+    const a = ATK[this.atk]; if (!a) return null;
+    const reach = a.reach * SC;
+    const x = this.facing > 0 ? this.x + this.w/2 : this.x - this.w/2 - reach;
+    return { x, y: this.y - this.h*0.78, w:reach, h:a.hh*SC };
+  }
+  enter(state, dur, atk) {
+    this.state = state; this.t = 0; this.dur = dur;
+    this.atk = atk || null; this.hitDone = false;
+  }
+}
+const overlap = (a,b) => a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+
+/* ---------------------------------------------------------- состояние */
+let p1, p2, phase, phaseT, round, roundTime, msg, msgSub;
+let bullets = [], parts = [], shake = 0, flashScreen = 0, hitStop = 0, TNOW = 0;
+let selStep = 0, selIdx = [0, 2];             // экран выбора: чей ход + курсоры
+const BEST_OF = 2;
+
+// сложность: p — множитель паузы ИИ между действиями, r — склонность атаковать
+const DIFFS = [ {n:'ЛЁГКО', p:2.0, r:.55}, {n:'НОРМА', p:1.15, r:.8}, {n:'СЛОЖНО', p:.65, r:1} ];
+let diffIdx = 1;
+
+function newMatch() {
+  p1 = new Fighter(ROSTER[selIdx[0]], 280, 1, false);
+  p2 = new Fighter(ROSTER[selIdx[1]], 680, -1, true);
+  round = 1;
+  startRound();
+}
+function startRound() {
+  p1.reset(280, 1); p2.reset(680, -1);
+  bullets = []; parts = [];
+  roundTime = 60; msg = 'РАУНД ' + round; msgSub = 'ГОТОВЬСЯ';
+  phase = 'ready'; phaseT = 1.6;
+}
+
+/* ------------------------------------------------------------- боевка */
+function tryAttack(f, kind) {
+  if (f.busy || !f.canAct) return;
+  if (f.form === 'robot') {
+    if (kind === 'light') f.enter('attack', ATK.light.start+ATK.light.active+ATK.light.end, 'light');
+    if (kind === 'heavy') f.enter('attack', ATK.heavy.start+ATK.heavy.active+ATK.heavy.end, 'heavy');
+  } else {
+    if (kind === 'light') { f.enter('ram', .45); f.vx = f.facing * 660; }
+    if (kind === 'heavy' && f.shootCd <= 0) {
+      f.shootCd = f.def.rapid ? .27 : .55;
+      bullets.push({ x:f.x + f.facing*44, y:f.y - 52, vx:f.facing*700, owner:f,
+                     dmg:(f.def.rapid ? 5 : 8) * f.def.pow, life:1.4, col:f.def.beam });
+    }
+  }
+}
+function trySuper(f) {
+  if (f.busy || f.energy < 100 || !f.canAct) return;
+  f.energy = 0; f.vx = 0; f.form = 'robot';
+  f.enter('super', ATK.super.start+ATK.super.active+ATK.super.end, 'super');
+  flashScreen = .35; shake = Math.max(shake, 16);
+}
+function tryTransform(f) {
+  if (f.busy || f.tfCd > 0 || !f.canAct) return;
+  f.enter('transform', .26); f.tfCd = 1.2; f.vx = 0;
+}
+
+function damage(target, src, dmg, kb, ky, stun) {
+  if (target.state === 'ko' || target.invuln || target.iframe > 0) return;
+  const fromFront = Math.sign(src.x - target.x) === target.facing;
+  const blocked = target.blocking && target.form === 'robot' && target.onGround && fromFront && stun < .6;
+  const real = blocked ? dmg * 0.2 : dmg;
+  target.hp = Math.max(0, target.hp - real);
+  target.flash = .12;
+  target.vx = Math.sign(target.x - src.x || -src.facing) * kb * (blocked ? .35 : 1);
+  if (!blocked && ky < -200) { target.vy = ky; target.onGround = false; }
+  if (!blocked) target.enter('hit', stun);
+  src.energy    = Math.min(100, src.energy + real * 1.4);
+  target.energy = Math.min(100, target.energy + real * 0.9);
+  shake = Math.max(shake, blocked ? 4 : Math.min(18, 4 + real));
+  hitStop = Math.max(hitStop, blocked ? .02 : .055);
+  const hx = (target.x + src.x)/2, hy = target.y - target.h*0.7;
+  for (let i = 0; i < (blocked ? 6 : 16); i++)
+    parts.push({ x:hx, y:hy, vx:(Math.random()-.5)*420, vy:(Math.random()-.7)*380,
+      life:.35+Math.random()*.3, col: blocked ? '#8fd0ff' : (Math.random()<.5?'#ffd36e':'#ff7a3d'),
+      s:2+Math.random()*3 });
+  if (target.hp <= 0) { target.enter('ko', 99); target.vy = -420; target.vx = Math.sign(target.x-src.x||1)*260; }
+}
+
+/* ---------------------------------------------------------------- AI */
+function aiUpdate(f, opp, dt) {
+  if (f.state === 'ko' || opp.state === 'ko') return;
+  f.aiT -= dt;
+  if (f.busy) { f.blocking = false; return; }
+
+  const dist = Math.abs(f.x - opp.x);
+  const dy   = f.y - opp.y;
+  const dir  = Math.sign(opp.x - f.x) || 1;
+  f.facing = dir;
+
+  if (f.flying && dy > 40 && Math.random() < .5) f.vy -= 2100 * dt;   // держать высоту
+
+  if (f.aiT > 0) {
+    if (f.aiAct === 'approach') f.vx = dir * f.speed;
+    else if (f.aiAct === 'retreat') f.vx = -dir * f.speed;
+    else if (f.aiAct === 'block') { f.blocking = f.form === 'robot'; f.vx = 0; }
+    else if (f.aiAct === 'climb') { f.vy -= 2400 * dt; f.vx = dir * f.speed * .5; }
+    return;
+  }
+  f.blocking = false; f.aiAct = null;
+  const r = Math.random();
+  const D = DIFFS[diffIdx];
+  const pause = () => (.24 + Math.random()*.34) * D.p;     // окно для ответа игрока
+
+  if (f.energy >= 100 && dist < 240 && f.onGround) { trySuper(f); f.aiT = .9 + pause(); return; }
+
+  if (f.form === 'vehicle') {
+    if (f.flying) {
+      if (r < .45*D.r)      { tryAttack(f,'heavy'); f.aiT = .3 + pause(); }
+      else if (r < .7*D.r)  { tryAttack(f,'light'); f.aiT = .45 + pause(); }
+      else if (r < .85)     { f.aiAct = 'climb'; f.aiT = .4; }
+      else                  { tryTransform(f); f.aiT = .5; }
+      return;
+    }
+    if (dist < 130)                     { tryTransform(f); f.aiT = .5; }
+    else if (dist < 430 && r < .55*D.r) { tryAttack(f,'light'); f.aiT = .45 + pause(); }
+    else if (r < .82*D.r)               { tryAttack(f,'heavy'); f.aiT = .3 + pause(); }
+    else { f.aiAct = 'approach'; f.aiT = .3; }
+    return;
+  }
+  if (dist < 105) {
+    if (r < .42*D.r)      { tryAttack(f,'light'); f.aiT = .26 + pause(); }
+    else if (r < .66*D.r) { tryAttack(f,'heavy'); f.aiT = .56 + pause(); }
+    else if (r < .88)     { f.aiAct = 'block';   f.aiT = .45; }
+    else                  { f.aiAct = 'retreat'; f.aiT = .3 + pause(); }
+  } else if (dist < 320) {
+    f.aiAct = 'approach'; f.aiT = .22 + Math.random()*.2;
+    if (r < .12 && f.onGround) { f.vy = -f.def.jump; f.onGround = false; }
+  } else {
+    if (r < .45) { tryTransform(f); f.aiT = .4; }
+    else { f.aiAct = 'approach'; f.aiT = .35; }
+  }
+}
+
+/* --------------------------------------------------------- физика/шаг */
+function stepFighter(f, opp, dt) {
+  f.tfCd = Math.max(0, f.tfCd - dt);
+  f.shootCd = Math.max(0, f.shootCd - dt);
+  f.flash = Math.max(0, f.flash - dt);
+  f.iframe = Math.max(0, f.iframe - dt);
+  f.walk += Math.abs(f.vx) * dt * 0.05;
+
+  if (f.state !== 'idle') {
+    f.t += dt;
+    if (f.state === 'transform' && f.t >= f.dur) {
+      f.form = f.form === 'robot' ? 'vehicle' : 'robot';
+      f.enter('idle', 0);
+    } else if (f.state !== 'ko' && f.t >= f.dur) {
+      if (f.state === 'hit') f.iframe = .22;          // защита от бесконечного станлока
+      f.enter('idle', 0);
+    }
+  }
+  if (f.state === 'ram') f.vx = f.facing * 660 * (1 - f.t / f.dur * .5);
+
+  f.vy += GRAV * (f.flying ? .32 : 1) * dt;
+  f.x += f.vx * dt; f.y += f.vy * dt;
+  if (f.y >= FLOOR) { f.y = FLOOR; f.vy = 0; f.onGround = true; }
+  else f.onGround = false;
+  if (f.y < CEIL) { f.y = CEIL; f.vy = Math.max(0, f.vy); }
+  f.x = Math.max(LEFT_WALL + f.w/2, Math.min(RIGHT_WALL - f.w/2, f.x));
+
+  const fr = f.onGround ? (f.state === 'ram' ? 0 : 12) : (f.flying ? 4 : 2.5);
+  f.vx -= f.vx * Math.min(1, fr * dt);
+
+  const d = f.x - opp.x, min = f.w * .85;
+  if (Math.abs(d) < min && Math.abs(f.y - opp.y) < 60) {
+    const push = (min - Math.abs(d)) / 2 * Math.sign(d || 1);
+    f.x += push; opp.x -= push;
+    const clamp = g => Math.max(LEFT_WALL + g.w/2, Math.min(RIGHT_WALL - g.w/2, g.x));
+    f.x = clamp(f); opp.x = clamp(opp);
+  }
+
+  if (f.state === 'attack' || f.state === 'super') {
+    const a = ATK[f.atk];
+    if (f.t >= a.start && f.t <= a.start + a.active && !f.hitDone) {
+      const hb = f.hitbox();
+      if (hb && overlap(hb, opp.body())) {
+        f.hitDone = true; damage(opp, f, a.dmg * f.def.pow, a.kb, a.ky, a.stun);
+      }
+    }
+  }
+  if (f.state === 'ram' && !f.hitDone && overlap(f.body(), opp.body())) {
+    f.hitDone = true; damage(opp, f, 13 * f.def.pow, 420, -300, .4); f.vx *= -.3;
+  }
+}
+
+function stepBullets(dt) {
+  for (const b of bullets) {
+    b.x += b.vx * dt; b.life -= dt;
+    const foe = b.owner === p1 ? p2 : p1;
+    if (overlap({x:b.x-8,y:b.y-6,w:16,h:12}, foe.body())) {
+      damage(foe, b.owner, b.dmg, 200, -60, .25); b.life = 0;
+    }
+    if (b.x < LEFT_WALL || b.x > RIGHT_WALL) b.life = 0;
+  }
+  bullets = bullets.filter(b => b.life > 0);
+  for (const p of parts) { p.x += p.vx*dt; p.y += p.vy*dt; p.vy += 900*dt; p.life -= dt; }
+  parts = parts.filter(p => p.life > 0);
+}
+
+/* ------------------------------------------------------------ игрок */
+function playerInput(f, dt) {
+  if (f.state === 'ko') return;
+  f.blocking = false;
+  if (f.busy) return;
+
+  const left = keys.KeyA || keys.ArrowLeft, right = keys.KeyD || keys.ArrowRight;
+  const up   = keys.KeyW || keys.ArrowUp;
+  if (keys.KeyS && f.form === 'robot' && f.onGround) { f.blocking = true; f.vx = 0; }
+  else {
+    if (left)  { f.vx = -f.speed; if (f.canAct) f.facing = -1; }
+    if (right) { f.vx =  f.speed; if (f.canAct) f.facing =  1; }
+  }
+  if (up) {
+    if (f.flying) f.vy = Math.max(f.vy - 2600 * dt, -430);                       // тяга джета
+    else if (f.onGround && f.form === 'robot' && !f.blocking) { f.vy = -f.def.jump; f.onGround = false; }
+  }
+  if (pressed('KeyJ')) tryAttack(f, 'light');
+  if (pressed('KeyK')) tryAttack(f, 'heavy');
+  if (pressed('KeyL')) trySuper(f);
+  if (pressed('Space')) tryTransform(f);
+}
+
+/* ================================================== СПРАЙТ-РИГ ======= */
+function box(x,y,w,h,col,shine) {
+  X.fillStyle = OUT; X.fillRect(x-1.5,y-1.5,w+3,h+3);
+  X.fillStyle = col; X.fillRect(x,y,w,h);
+  if (shine !== false && h > 5) {
+    X.fillStyle = 'rgba(255,255,255,.16)'; X.fillRect(x,y,w,2);
+    X.fillStyle = 'rgba(0,0,0,.28)';       X.fillRect(x,y+h-3,w,3);
+  }
+}
+const glow = (x,y,w,h,col) => { X.save(); X.shadowColor=col; X.shadowBlur=12;
+  X.fillStyle=col; X.fillRect(x,y,w,h); X.restore(); };
+
+function poly(pts, col, shine) {
+  X.beginPath(); X.moveTo(pts[0][0], pts[0][1]);
+  for (let i=1;i<pts.length;i++) X.lineTo(pts[i][0], pts[i][1]);
+  X.closePath();
+  X.strokeStyle = OUT; X.lineWidth = 3; X.lineJoin = 'round'; X.stroke();
+  X.fillStyle = col; X.fill();
+  if (shine !== false) {
+    let x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+    for (const p of pts){ x0=Math.min(x0,p[0]); x1=Math.max(x1,p[0]); y0=Math.min(y0,p[1]); y1=Math.max(y1,p[1]); }
+    X.save(); X.clip();
+    X.fillStyle='rgba(255,255,255,.15)'; X.fillRect(x0,y0,x1-x0,2.5);
+    X.fillStyle='rgba(0,0,0,.3)';        X.fillRect(x0,y1-3,x1-x0,3);
+    X.restore();
+  }
+}
+// затемнение цвета для дальних конечностей (глубина)
+function dk(hex, k) {
+  const n = parseInt(hex.slice(1), 16);
+  return 'rgb(' + Math.round(((n>>16)&255)*k) + ',' + Math.round(((n>>8)&255)*k) + ',' + Math.round((n&255)*k) + ')';
+}
+
+/* --- головы (y = верх шлема) ----------------------------------------- */
+function drawHead(c, y) {
+  box(-7, y+18, 14, 9, c.dark);                                  // шея
+  if (c.head === 'optimus') {
+    box(-17,y+2,7,14,c.main); box(10,y+2,7,14,c.main);           // антенны
+    box(-13,y,26,22,c.metal);
+    box(-13,y,26,5,c.main);                                      // козырёк
+    glow(-10,y+8,20,6,c.visor);
+    box(-9,y+16,18,8,c.metal);                                   // лицевая маска
+    box(-9,y+16,18,2,c.dark);
+  } else if (c.head === 'megatron') {
+    box(-6,y-14,12,16,c.metal);                                  // гребень
+    box(-14,y,28,23,c.main);
+    box(-14,y,28,5,c.metal);
+    glow(-11,y+8,22,6,c.visor);
+    box(-8,y+17,16,6,c.metal);
+    box(-16,y+4,4,12,c.metal); box(12,y+4,4,12,c.metal);         // «уши»
+  } else if (c.head === 'bee') {
+    box(-16,y+1,6,12,c.metal); box(10,y+1,6,12,c.metal);         // рожки
+    box(-13,y,26,21,c.main);
+    glow(-10,y+6,9,9,c.visor); glow(2,y+6,9,9,c.visor);          // большие глаза
+    box(-7,y+18,14,5,c.alt);
+  } else if (c.head === 'screamer') {
+    box(-4,y-18,9,20,c.alt);                                     // хохол
+    box(-12,y,24,21,c.main);
+    box(-12,y+1,24,4,c.alt);
+    glow(-10,y+8,20,5,c.visor);
+    box(-8,y+16,16,6,c.metal);
+  } else {                                                       // soundwave
+    box(-14,y-1,28,24,c.alt);
+    box(-14,y-1,28,5,c.main);
+    glow(-11,y+7,22,11,c.visor);                                 // сплошной визор
+  }
+}
+/* --- грудь (корпус −93..−62) ----------------------------------------- */
+function drawChest(c) {
+  if (c.chest === 'window') {                                    // лобовые стёкла фуры
+    box(-20,-90,40,22,c.metal);
+    box(-18,-88,16,18,'#9fd8ff'); box(2,-88,16,18,'#9fd8ff');
+    box(-22,-70,44,9,c.alt);
+    box(-11,-68,22,5,c.dark);
+  } else if (c.chest === 'hood') {
+    box(-19,-90,38,23,c.alt);
+    box(-6,-90,12,23,c.main);                                    // гоночная полоса
+    box(-19,-68,38,6,c.metal);
+  } else if (c.chest === 'core') {
+    box(-18,-90,36,23,c.dark);
+    glow(-10,-85,20,12,c.alt);                                   // ядро
+    box(-18,-90,7,23,c.metal); box(11,-90,7,23,c.metal);
+  } else if (c.chest === 'intake') {
+    box(-21,-90,18,23,c.dark); box(3,-90,18,23,c.dark);          // воздухозаборники
+    box(-19,-86,14,4,c.alt);   box(5,-86,14,4,c.alt);
+    box(-4,-90,8,23,c.metal);
+  } else {                                                       // кассетник
+    box(-20,-90,40,23,c.dark);
+    X.fillStyle=c.metal; X.beginPath(); X.arc(-9,-79,6,0,7); X.fill();
+    X.beginPath(); X.arc(9,-79,6,0,7); X.fill();
+    box(-20,-67,40,5,c.main);
+  }
+}
+/* --- «рюкзак»: детали альт-формы за спиной ---------------------------- */
+function drawBack(c) {
+  if (c.vehicle === 'truck') {                                   // двери-крылья + трубы
+    poly([[-44,-98],[-18,-93],[-20,-64],[-46,-70]], c.main);
+    box(-40,-92,16,15,'#9fd8ff');
+    box(-33,-110,8,14,c.metal); box(-22,-110,8,14,c.metal);
+  } else if (c.vehicle === 'car') {
+    poly([[-46,-96],[-18,-91],[-20,-62],[-48,-68]], c.main);
+    poly([[-43,-91],[-22,-87],[-23,-75],[-41,-79]], c.alt);
+  } else if (c.vehicle === 'tank') {                             // пушка на спине
+    box(-46,-94,26,28,c.metal);
+    box(-42,-116,16,22,c.dark);
+    box(-84,-112,44,13,c.dark);                                  // ствол назад
+    glow(-90,-109,8,8,c.alt);
+  } else if (c.vehicle === 'jet') {                              // крылья и киль
+    poly([[-56,-102],[-14,-90],[-16,-72],[-54,-76]], c.metal);
+    poly([[-56,-102],[-42,-99],[-44,-86],[-56,-88]], c.alt);
+    poly([[-48,-116],[-32,-94],[-44,-94]], c.alt);
+  } else {                                                       // антенна саундвейва
+    box(-42,-98,24,26,c.dark);
+    box(-36,-118,9,22,c.metal);
+    glow(-36,-122,9,6,c.visor);
+  }
+}
+/* --- нога: бедро → колено → голень → ступня --------------------------- */
+function drawLeg(c, x, off, thigh, shin, foot, tuck) {
+  poly([[x-11, -68+tuck],[x+11, -68+tuck],[x+10+off, -44+tuck],[x-10+off, -44+tuck]], thigh);
+  box(x-10+off, -47+tuck, 20, 8, foot);                         // колено
+  poly([[x-10+off, -42+tuck],[x+10+off, -42+tuck],[x+12+off, -13],[x-12+off, -13]], shin);
+  box(x-14+off, -22, 9, 8, foot);                               // накладка на голень
+  poly([[x-14+off, -14],[x+13+off, -14],[x+17+off, 0],[x-14+off, 0]], foot);
+}
+/* --- оружие ----------------------------------------------------------- */
+function weaponAt(c, x, y) {
+  if (c.weapon === 'cannon')       { box(x,y,22,30,c.dark); glow(x+18,y+10,8,12,c.beam); }
+  else if (c.weapon === 'blaster') { box(x,y+5,24,20,c.metal); glow(x+20,y+10,7,10,c.beam); }
+  else if (c.weapon === 'sonic')   { box(x,y+3,20,24,c.dark); glow(x+3,y+8,13,15,c.beam); }
+  else                             { box(x,y+4,20,22,c.alt); box(x+2,y+8,16,4,c.dark); }
+}
+/* --- робот ------------------------------------------------------------ */
+function drawRobotRig(c, s) {
+  s = s || {};
+  const sw = s.sw || 0, bob = s.bob || 0, cr = s.crouch || 0;
+  const tuck = s.jump ? 10 : 0;
+  X.save(); X.translate(0, cr);
+
+  drawBack(c);                                                   // детали альт-формы за спиной
+
+  // дальняя рука (затемнена для глубины)
+  X.save(); X.translate(0, bob);
+  poly([[-40,-97],[-14,-101],[-12,-76],[-38,-72]], dk(c.alt,.66));   // наплечник
+  box(-36,-82,16,23, dk(c.metal,.66));                               // плечо
+  box(-35,-61,15,25, dk(c.main,.66));                                // предплечье
+  box(-36,-39,17,13, dk(c.dark,.85));                                // кулак
+  X.restore();
+
+  // ноги
+  drawLeg(c, -12, -sw*.55, dk(c.metal,.8), dk(c.main,.8), dk(c.dark,.85), tuck);
+  drawLeg(c,  12,  sw*.55, c.metal, c.main, c.dark, tuck);
+  box(-18, -72+tuck, 36, 13, c.dark);                            // таз
+
+  // корпус + голова
+  X.save(); X.translate(0, bob);
+  poly([[-24,-94],[24,-94],[20,-62],[-20,-62]], c.main);
+  drawChest(c);
+  poly([[12,-99],[40,-94],[38,-70],[10,-75]], c.alt);            // передний наплечник
+  drawHead(c, -122);
+  X.restore();
+
+  // ближняя рука / оружие
+  X.save(); X.translate(0, bob);
+  if (s.blocking) {
+    box(-32,-88,24,42,c.metal); box(8,-88,24,42,c.metal);
+    glow(-30,-86,62,6,'#dff1ff');
+  } else if (s.punch) {
+    box(20,-86, Math.max(18, s.reach-16), 19, c.metal);          // выброшенная рука
+    weaponAt(c, s.reach + 4, -90);
+  } else {
+    box(22,-84,17,24,c.metal);                                   // плечо
+    box(21,-62,18,26,c.main);                                    // предплечье
+    box(20,-38,20,14,c.dark);                                    // кулак
+    if (c.weapon === 'cannon') { box(34,-70,18,30,c.dark); glow(38,-74,10,8,c.beam); }   // наручная пушка
+    if (c.weapon === 'sonic')  { box(33,-66,19,18,c.dark); glow(36,-62,12,9,c.beam); }
+  }
+  // суперудар
+  if (s.superAct !== undefined) {
+    box(22,-100,30,34,c.dark);
+    if (s.superAct) {
+      const k = s.superK, gh = 54 + Math.sin(k*18)*12;
+      X.globalAlpha = .9 - k*.35;
+      const g = X.createLinearGradient(50,0,50+ATK.super.reach,0);
+      g.addColorStop(0,'#ffffff'); g.addColorStop(.35,c.beam); g.addColorStop(1,'rgba(255,255,255,0)');
+      X.fillStyle = g; X.fillRect(50, -84-gh/2, ATK.super.reach, gh);
+      X.globalAlpha = 1;
+    } else glow(50,-90,12,16,c.beam);
+  }
+  X.restore();
+  X.restore();
+}
+/* --- транспорт -------------------------------------------------------- */
+function wheels(xs, y, r) {
+  for (const x of xs) {
+    X.fillStyle = OUT; X.beginPath(); X.arc(x,y,r+1.5,0,7); X.fill();
+    X.fillStyle = '#12161f'; X.beginPath(); X.arc(x,y,r,0,7); X.fill();
+    X.fillStyle = '#48536b'; X.beginPath(); X.arc(x,y,r*.42,0,7); X.fill();
+  }
+}
+function drawVehicleRig(c, s) {
+  s = s || {};
+  if (c.vehicle === 'truck') {                         // тягач с прицепом и пламенем
+    box(-58,-62,54,44,c.metal);                        // прицеп
+    box(-56,-56,50,13,c.dark);
+    box(-2,-78,46,60,c.alt);                           // кабина
+    box(6,-72,30,22,'#9fd8ff');
+    box(-2,-32,46,14,c.main);
+    box(-8,-90,10,15,c.metal); box(6,-90,10,15,c.metal);   // выхлопные трубы
+    box(40,-48,16,24,c.metal);                         // бампер
+    poly([[-2,-44],[22,-50],[12,-38],[26,-36],[-2,-30]], c.main);   // языки пламени
+    wheels([-44,-18,22,40],-13,14);
+  } else if (c.vehicle === 'car') {                    // спорткар с полосами
+    box(-52,-44,104,28,c.main);
+    box(-26,-64,50,22,c.main); box(-21,-59,40,14,'#9fd8ff');
+    box(-7,-64,14,22,c.alt); box(-7,-44,14,28,c.alt);  // гоночные полосы
+    box(-54,-40,10,13,c.alt); box(36,-56,16,7,c.alt);  // спойлер
+    box(-52,-34,104,5,c.alt);
+    wheels([-32,30],-15,15);
+  } else if (c.vehicle === 'tank') {
+    box(-56,-46,112,30,c.metal);
+    box(-56,-50,112,7,c.dark);
+    box(-28,-70,56,26,c.main);                         // башня
+    box(26,-64,54,14,c.metal); box(76,-68,13,22,c.alt); // ствол
+    glow(84,-62,6,10,c.beam);
+    wheels([-40,-15,15,40],-13,14);
+  } else if (c.vehicle === 'jet') {
+    poly([[-54,-74],[8,-62],[10,-46],[-52,-50]], c.metal);  // крыло
+    poly([[-60,-94],[-40,-64],[-54,-64]], c.alt);           // киль
+    box(-48,-62,90,24,c.main);                              // фюзеляж
+    box(36,-58,38,17,c.metal);                              // нос
+    box(70,-54,15,10,c.alt);
+    box(-8,-68,26,11,'#9fd8ff');                            // фонарь кабины
+    glow(-58,-60,12,18,c.beam);                             // сопло
+  } else {                                                  // дрон саундвейва
+    box(-56,-68,112,32,c.main);
+    box(-48,-64,32,24,c.dark); box(16,-64,32,24,c.dark);
+    X.fillStyle=c.metal; X.beginPath(); X.arc(-32,-52,8,0,7); X.fill();
+    X.beginPath(); X.arc(32,-52,8,0,7); X.fill();
+    box(-24,-82,48,14,c.alt); glow(-18,-79,36,6,c.visor);
+    glow(-56,-44,112,6,c.beam);                             // антиграв
+  }
+  if (s.ram) { X.globalAlpha=.55; glow(-92,-62,36,44,c.beam); X.globalAlpha=1; }
+}
+
+/* ------------------------------------------------------- отрисовка сцены */
+function drawBg() {
+  const g = X.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#101b33'); g.addColorStop(.55,'#1a1230'); g.addColorStop(1,'#080a12');
+  X.fillStyle = g; X.fillRect(0,0,W,H);
+  X.fillStyle = 'rgba(255,190,120,.08)';
+  X.beginPath(); X.arc(760,150,110,0,7); X.fill();
+  X.fillStyle = '#0d1426';
+  const towers = [[60,300,70],[150,230,50],[215,330,90],[320,270,44],[380,350,110],
+                  [520,250,60],[600,320,48],[665,210,70],[760,330,84],[860,265,60]];
+  for (const [x,y,w2] of towers) X.fillRect(x,y,w2,FLOOR-y);
+  X.fillStyle = 'rgba(120,180,255,.25)';
+  for (const [x,y,w2] of towers)
+    for (let yy = y+14; yy < FLOOR-10; yy += 26)
+      for (let xx = x+8; xx < x+w2-8; xx += 18) if ((xx+yy) % 7 < 4) X.fillRect(xx,yy,5,6);
+  X.fillStyle='#141a2b'; X.fillRect(0,FLOOR,W,H-FLOOR);
+  X.fillStyle='#2c6ea8'; X.fillRect(0,FLOOR,W,4);
+  X.strokeStyle='rgba(90,150,220,.18)'; X.lineWidth=1;
+  for (let i=0;i<24;i++){ X.beginPath(); X.moveTo(i*44-40,FLOOR+6); X.lineTo(i*70-300,H); X.stroke(); }
+}
+
+function fighterPose(f) {
+  const c = f.def;
+  const moving = f.onGround && Math.abs(f.vx) > 40 && f.state === 'idle';
+  const s = {
+    sw: moving ? Math.sin(f.walk*6) * 11 : 0,
+    bob: moving ? Math.abs(Math.sin(f.walk*6)) * 2.5 : Math.sin(TNOW*2) * 1.5,
+    crouch: f.blocking ? 6 : 0,
+    jump: !f.onGround && f.state !== 'ko',
+    blocking: f.blocking
+  };
+  if (f.state === 'attack') {
+    const a = ATK[f.atk];
+    s.punch = f.t >= a.start && f.t <= a.start + a.active + .06;
+    s.reach = a.reach;
+  }
+  if (f.state === 'super') {
+    const a = ATK.super;
+    s.superAct = f.t >= a.start && f.t <= a.start + a.active;
+    s.superK = Math.max(0,(f.t - a.start) / a.active);
+  }
+  if (f.state === 'hit') s.bob = 2;
+  s.ram = f.state === 'ram';
+  return s;
+}
+
+function drawFighter(f) {
+  X.save();
+  X.globalAlpha = .28; X.fillStyle = '#000';
+  const sh = 1 - Math.min(.7, (FLOOR - f.y) / 400);
+  X.beginPath(); X.ellipse(f.x, FLOOR+3, 48*sh, 11*sh, 0, 0, 7); X.fill(); X.globalAlpha = 1;
+  X.translate(f.x, f.y);
+  if (f.state === 'ko') X.rotate(f.facing * -1.35);
+  if (f.state === 'transform') { const k=f.t/f.dur; X.scale(1-Math.sin(k*Math.PI)*.4, 1+Math.sin(k*Math.PI)*.22); }
+  if (f.flying) X.rotate(f.facing * -0.12);
+  X.scale(f.facing * SC, SC);
+  const s = fighterPose(f);
+  if (f.form === 'robot') drawRobotRig(f.def, s); else drawVehicleRig(f.def, s);
+  X.restore();
+  if (f.flash > 0) { X.save(); X.globalAlpha = f.flash*4; X.globalCompositeOperation='lighter';
+    const b=f.body(); X.fillStyle='#ff9c5c'; X.fillRect(b.x,b.y,b.w,b.h); X.restore(); }
+}
+
+function bar(x,y,w,h,val,max,col,bg,flip) {
+  X.fillStyle='#0b1020'; X.fillRect(x,y,w,h); X.fillStyle=bg; X.fillRect(x+2,y+2,w-4,h-4);
+  const iw = (w-4) * Math.max(0,val)/max;
+  X.fillStyle=col; X.fillRect(flip ? x+w-2-iw : x+2, y+2, iw, h-4);
+  X.strokeStyle='#2a3a5c'; X.lineWidth=2; X.strokeRect(x,y,w,h);
+}
+
+function drawHud() {
+  X.textAlign='left'; X.font='bold 15px Trebuchet MS';
+  X.fillStyle='#9fd8ff'; X.fillText(p1.def.name, 40, 32);
+  X.textAlign='right'; X.fillStyle='#d9b4ff'; X.fillText(p2.def.name, W-40, 32);
+  bar(40,40,360,26,p1.hp,p1.maxhp,'#3ad46a','#2a1520',false);
+  bar(W-400,40,360,26,p2.hp,p2.maxhp,'#3ad46a','#2a1520',true);
+  bar(40,70,240,10,p1.energy,100, p1.energy>=100?'#ffe066':'#4ec8ff','#122036',false);
+  bar(W-280,70,240,10,p2.energy,100, p2.energy>=100?'#ffe066':'#c08bff','#122036',true);
+  X.textAlign='center'; X.font='bold 34px Trebuchet MS'; X.fillStyle='#e8f0ff';
+  X.fillText(Math.ceil(Math.max(0,roundTime)), W/2, 58);
+  for (let i=0;i<BEST_OF;i++){
+    X.fillStyle = p1.wins > i ? '#ffe066' : '#26324d';
+    X.beginPath(); X.arc(W/2-34-i*20, 74, 7, 0, 7); X.fill();
+    X.fillStyle = p2.wins > i ? '#ffe066' : '#26324d';
+    X.beginPath(); X.arc(W/2+34+i*20, 74, 7, 0, 7); X.fill();
+  }
+  X.font='bold 12px Trebuchet MS'; X.textAlign='left';
+  X.fillStyle = p1.form==='robot' ? '#7fa8d8' : '#ffb26e';
+  X.fillText('РЕЖИМ: ' + (p1.form==='robot' ? 'РОБОТ' : p1.def.vname), 40, 96);
+  X.textAlign='right';
+  X.fillStyle = p2.form==='robot' ? '#b78fd8' : '#ffb26e';
+  X.fillText('РЕЖИМ: ' + (p2.form==='robot' ? 'РОБОТ' : p2.def.vname), W-40, 96);
+}
+
+function drawCenterMsg() {
+  if (!msg) return;
+  X.textAlign='center'; X.font='bold 62px Trebuchet MS';
+  X.fillStyle='rgba(0,0,0,.55)'; X.fillText(msg, W/2+3, H/2-16+3);
+  X.fillStyle='#ffe066'; X.fillText(msg, W/2, H/2-16);
+  if (msgSub){ X.font='bold 20px Trebuchet MS'; X.fillStyle='#cdd6e4'; X.fillText(msgSub, W/2, H/2+22); }
+}
+
+/* ------------------------------------------------------- экраны меню */
+function drawMenu() {
+  drawBg();
+  X.textAlign='center';
+  X.font='bold 52px Trebuchet MS'; X.fillStyle='#4ec8ff'; X.fillText('TRANSFORMERS', W/2, 132);
+  X.font='bold 26px Trebuchet MS'; X.fillStyle='#d0332f'; X.fillText('BATTLE FOR CYBERTRON', W/2, 166);
+  X.font='16px Trebuchet MS'; X.fillStyle='#cdd6e4';
+  (IS_TOUCH
+    ? [ '5 персонажей · матч до 2 побед · раунд 60 сек',
+        '',
+        'Слева — движение и БЛОК, справа — атаки',
+        'УДАР (в транспорте — таран) · СИЛЬНЫЙ (в транспорте — выстрел)',
+        'ТРАНСФОРМ — смена формы · СУПЕР — при полном энергоне',
+        '⛶ в углу — на весь экран' ]
+    : [ '5 персонажей · матч до 2 побед · раунд 60 сек',
+        '',
+        'A / D — движение     W — прыжок (в джете — тяга)     S — блок',
+        'J — быстрый удар (в транспорте: ТАРАН)',
+        'K — тяжёлый удар (в транспорте: ВЫСТРЕЛ)',
+        'ПРОБЕЛ — ТРАНСФОРМАЦИЯ     L — суперудар при полном энергоне' ]
+  ).forEach((t,i) => X.fillText(t, W/2, 232 + i*26));
+  X.font='bold 15px Trebuchet MS';
+  DIFFS.forEach((d,i) => {
+    const x = W/2 - 150 + i*150;
+    X.fillStyle = i === diffIdx ? '#ffe066' : '#5b6b8a';
+    X.fillText((i+1) + ' · ' + d.n, x, 418);
+    if (i === diffIdx) { X.strokeStyle='#ffe066'; X.lineWidth=1.5; X.strokeRect(x-58,402,116,22); }
+  });
+  X.font='bold 22px Trebuchet MS'; X.fillStyle='#ffe066';
+  X.fillText(IS_TOUCH ? 'ТАП ПО ЭКРАНУ — ВЫБОР БОЙЦА' : 'ENTER — ВЫБОР БОЙЦА', W/2, 460);
+  // превью ростера
+  ROSTER.forEach((id,i) => {
+    X.save(); X.translate(150 + i*165, 392); X.scale(.34,.34);
+    drawRobotRig(CHARS[id], { bob: Math.sin(TNOW*2 + i)*2 }); X.restore();
+  });
+}
+
+function statBar(x,y,w,v,col) {
+  X.fillStyle='#1a2136'; X.fillRect(x,y,w,6);
+  X.fillStyle=col; X.fillRect(x,y,w*Math.max(.06,Math.min(1,v)),6);
+}
+
+function drawSelect() {
+  drawBg();
+  X.fillStyle='rgba(5,8,16,.55)'; X.fillRect(0,0,W,H);
+  X.textAlign='center'; X.font='bold 26px Trebuchet MS';
+  X.fillStyle = selStep === 0 ? '#4ec8ff' : '#ff8080';
+  X.fillText(selStep === 0 ? 'ВЫБЕРИ СВОЕГО БОЙЦА' : 'ВЫБЕРИ ПРОТИВНИКА (ИИ)', W/2, 56);
+
+  const cw = 168, gap = 12, x0 = (W - (ROSTER.length*cw + (ROSTER.length-1)*gap))/2, y0 = 92, ch = 300;
+  ROSTER.forEach((id,i) => {
+    const c = CHARS[id], x = x0 + i*(cw+gap);
+    const selMe = selIdx[0] === i, selFoe = selIdx[1] === i && selStep === 1;
+    const active = selIdx[selStep] === i;
+    X.fillStyle = active ? 'rgba(30,48,84,.95)' : 'rgba(14,20,34,.85)';
+    X.fillRect(x, y0, cw, ch);
+    X.lineWidth = active ? 3 : 1.5;
+    X.strokeStyle = active ? (selStep===0 ? '#4ec8ff' : '#ff6b6b') : '#2a3a5c';
+    X.strokeRect(x, y0, cw, ch);
+    if (selStep === 1 && selMe) { X.lineWidth=3; X.strokeStyle='#4ec8ff'; X.strokeRect(x+4,y0+4,cw-8,ch-8); }
+
+    X.textAlign='center'; X.font='bold 13px Trebuchet MS';
+    X.fillStyle = c.faction === 'auto' ? '#6fd3ff' : '#c08bff';
+    X.fillText(c.faction === 'auto' ? 'АВТОБОТ' : 'ДЕСЕПТИКОН', x+cw/2, y0+22);
+    X.font='bold 15px Trebuchet MS'; X.fillStyle='#e8f0ff';
+    X.fillText(c.name, x+cw/2, y0+42);
+
+    X.save(); X.translate(x+cw/2, y0+188); X.scale(.72,.72);
+    drawRobotRig(c, { bob: active ? Math.sin(TNOW*4)*3 : Math.sin(TNOW*1.6+i)*1.5 }); X.restore();
+    X.save(); X.translate(x+cw/2, y0+228); X.scale(.40,.40); drawVehicleRig(c, {}); X.restore();
+
+    X.textAlign='left'; X.font='10px Trebuchet MS'; X.fillStyle='#8fa0bd';
+    const sx = x+14, sw2 = cw-28;
+    X.fillText('СИЛА',   sx, y0+246); statBar(sx+44, y0+240, sw2-44, (c.pow-.8)/.4,  '#ff8a5c');
+    X.fillText('СКОР.',  sx, y0+262); statBar(sx+44, y0+256, sw2-44, (c.spd-280)/100,'#5ce0a0');
+    X.fillText('БРОНЯ',  sx, y0+278); statBar(sx+44, y0+272, sw2-44, (c.hp-80)/35,   '#6fb8ff');
+    X.textAlign='center'; X.font='10px Trebuchet MS'; X.fillStyle='#ffb26e';
+    X.fillText(c.vname + (c.fly ? ' · ЛЕТАЕТ' : (c.rapid ? ' · СКОРОСТРЕЛ' : '')), x+cw/2, y0+294);
+  });
+
+  X.textAlign='center'; X.font='14px Trebuchet MS'; X.fillStyle='#cdd6e4';
+  X.fillText(CHARS[ROSTER[selIdx[selStep]]].bio, W/2, 420);
+  X.font='bold 16px Trebuchet MS'; X.fillStyle='#ffe066';
+  X.fillText(IS_TOUCH
+    ? 'ТАП по карточке — выбрать, повторный ТАП — подтвердить'
+    : 'A / D — выбор      ENTER или J — подтвердить      R — случайный      ESC — назад', W/2, 462);
+}
+
+/* ------------------------------------------------------------- цикл */
+function update(dt) {
+  if (phase === 'menu') {
+    if (pressed('Digit1')) diffIdx = 0;
+    if (pressed('Digit2')) diffIdx = 1;
+    if (pressed('Digit3')) diffIdx = 2;
+    if (pressed('KeyA') || pressed('ArrowLeft'))  diffIdx = Math.max(0, diffIdx-1);
+    if (pressed('KeyD') || pressed('ArrowRight')) diffIdx = Math.min(DIFFS.length-1, diffIdx+1);
+    if (pressed('Enter')) { phase='select'; selStep=0; }
+    return;
+  }
+
+  if (phase === 'select') {
+    if (pressed('KeyA') || pressed('ArrowLeft'))  selIdx[selStep] = (selIdx[selStep]+ROSTER.length-1)%ROSTER.length;
+    if (pressed('KeyD') || pressed('ArrowRight')) selIdx[selStep] = (selIdx[selStep]+1)%ROSTER.length;
+    if (pressed('KeyR')) selIdx[selStep] = Math.floor(Math.random()*ROSTER.length);
+    if (pressed('Escape')) { if (selStep === 1) selStep = 0; else phase = 'menu'; }
+    if (pressed('Enter') || pressed('KeyJ')) {
+      if (selStep === 0) { selStep = 1; if (selIdx[1] === selIdx[0]) selIdx[1] = (selIdx[0]+2)%ROSTER.length; }
+      else newMatch();
+    }
+    return;
+  }
+  if (phase === 'ready') {
+    phaseT -= dt;
+    if (phaseT <= 0) { phase='fight'; msg='В БОЙ!'; msgSub=''; phaseT=.7; }
+    return;
+  }
+  if (phase === 'fight') {
+    if (msg) { phaseT -= dt; if (phaseT <= 0) msg = ''; }
+    roundTime -= dt;
+    playerInput(p1, dt);
+    aiUpdate(p2, p1, dt);
+    stepFighter(p1, p2, dt); stepFighter(p2, p1, dt);
+    stepBullets(dt);
+    if (p1.state === 'idle' && p1.onGround && !p1.busy) p1.facing = Math.sign(p2.x-p1.x) || p1.facing;
+    let done = null;
+    const r1 = p1.hp/p1.maxhp, r2 = p2.hp/p2.maxhp;
+    if (p1.hp <= 0 || p2.hp <= 0) done = p1.hp <= 0 ? (p2.hp <= 0 ? 'draw' : 'p2') : 'p1';
+    else if (roundTime <= 0) done = r1 === r2 ? 'draw' : (r1 > r2 ? 'p1' : 'p2');
+    if (done) {
+      if (done === 'p1') p1.wins++; else if (done === 'p2') p2.wins++;
+      msg = done === 'draw' ? 'НИЧЬЯ' : (done === 'p1' ? 'ПОБЕДА!' : 'ПОРАЖЕНИЕ');
+      msgSub = done === 'p1' ? 'Раунд за тобой' : (done === 'p2' ? 'Держись, раунд проигран' : '');
+      phase = 'roundEnd'; phaseT = 2.4;
+    }
+    return;
+  }
+  if (phase === 'roundEnd') {
+    stepFighter(p1,p2,dt); stepFighter(p2,p1,dt); stepBullets(dt);
+    phaseT -= dt;
+    if (phaseT <= 0) {
+      if (p1.wins >= BEST_OF || p2.wins >= BEST_OF) {
+        const win = p1.wins >= BEST_OF;
+        msg = win ? 'ТЫ ПОБЕДИЛ' : 'ТЫ ПРОИГРАЛ';
+        msgSub = 'ENTER — новый бой   ·   ESC — выбор бойца';
+        phase = 'matchEnd';
+      } else { round++; startRound(); }
+    }
+    return;
+  }
+  if (phase === 'matchEnd') {
+    if (pressed('Enter')) { p1.wins=0; p2.wins=0; newMatch(); }
+    if (pressed('Escape')) { phase='select'; selStep=0; }
+  }
+}
+
+function render() {
+  X.save();
+  if (shake > 0) X.translate((Math.random()-.5)*shake, (Math.random()-.5)*shake);
+  if (phase === 'menu')   { drawMenu();   X.restore(); return; }
+  if (phase === 'select') { drawSelect(); X.restore(); return; }
+  drawBg();
+  for (const b of bullets) {
+    glow(b.x-14,b.y-4,28,8,b.col);
+    X.globalAlpha=.4; X.fillStyle=b.col; X.fillRect(b.x-34,b.y-2,32,4); X.globalAlpha=1;
+  }
+  drawFighter(p2); drawFighter(p1);
+  for (const p of parts) { X.globalAlpha=Math.max(0,p.life*2.4); X.fillStyle=p.col; X.fillRect(p.x,p.y,p.s,p.s); }
+  X.globalAlpha=1;
+  drawHud(); drawCenterMsg();
+  X.restore();
+  if (flashScreen > 0) { X.globalAlpha=flashScreen; X.fillStyle='#fff'; X.fillRect(0,0,W,H); X.globalAlpha=1; }
+}
+
+let last = performance.now();
+function loop(now) {
+  let dt = Math.min(.05, (now - last) / 1000); last = now; TNOW += dt;
+  if (hitStop > 0) { hitStop -= dt; dt *= .15; }
+  shake = Math.max(0, shake - dt*60);
+  flashScreen = Math.max(0, flashScreen - dt*2.2);
+  update(dt); render(); clearPresses();
+  requestAnimationFrame(loop);
+}
+
+/* ------------------------------------------- сенсорное управление */
+const GAME = {
+  press(code)  { if (!keys[code]) keys[code+'_p'] = true; keys[code] = true; },
+  release(code){ keys[code] = false; },
+  tap(code)    { this.press(code); setTimeout(() => this.release(code), 70); }
+};
+const pad = document.getElementById('pad');
+IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
+        || new URLSearchParams(location.search).has('pad');
+if (IS_TOUCH) pad.classList.add('on');
+
+pad.querySelectorAll('[data-k]').forEach(b => {
+  const code = b.dataset.k;
+  const down = e => { e.preventDefault(); b.classList.add('act'); GAME.press(code); };
+  const up   = e => { e.preventDefault(); b.classList.remove('act'); GAME.release(code); };
+  b.addEventListener('pointerdown', down);
+  b.addEventListener('pointerup', up);
+  b.addEventListener('pointercancel', up);
+  b.addEventListener('pointerleave', up);
+});
+
+// тапы по игровому полю на экранах меню / выбора / итога
+CV.addEventListener('pointerdown', e => {
+  const r = CV.getBoundingClientRect();
+  const cx = (e.clientX - r.left) * (W / r.width);
+  const cy = (e.clientY - r.top)  * (H / r.height);
+
+  if (phase === 'menu') {
+    e.preventDefault();
+    if (cy > 396 && cy < 432) {                       // полоса выбора сложности
+      const i = Math.round((cx - (W/2 - 150)) / 150);
+      if (i >= 0 && i < DIFFS.length) { diffIdx = i; return; }
+    }
+    GAME.tap('Enter');
+  } else if (phase === 'select') {
+    e.preventDefault();
+    const cw = 168, gap = 12, x0 = (W - (ROSTER.length*cw + (ROSTER.length-1)*gap))/2, y0 = 92;
+    const i = Math.floor((cx - x0) / (cw + gap));
+    const insideCard = i >= 0 && i < ROSTER.length && cy >= y0 && cy <= y0 + 300
+                       && cx >= x0 + i*(cw+gap) && cx <= x0 + i*(cw+gap) + cw;
+    if (insideCard && selIdx[selStep] !== i) selIdx[selStep] = i;   // первый тап — выделить
+    else GAME.tap('Enter');                                        // повторный — подтвердить
+  } else if (phase === 'matchEnd') {
+    e.preventDefault(); GAME.tap('Enter');
+  }
+});
+
+document.getElementById('bFull').addEventListener('click', () => {
+  const el = document.documentElement;
+  if (!document.fullscreenElement) (el.requestFullscreen || el.webkitRequestFullscreen || (()=>{})).call(el);
+  else document.exitFullscreen();
+});
+
+// отладка: состояние матча из консоли
+window.__dbg = () => ({
+  phase, round, roundTime,
+  keys: Object.keys(keys).filter(k => keys[k] && !k.endsWith('_p')),
+  p1: p1 && { id:p1.id, hp:+p1.hp.toFixed(1), form:p1.form, state:p1.state, wins:p1.wins, x:+p1.x.toFixed(0) },
+  p2: p2 && { id:p2.id, hp:+p2.hp.toFixed(1), form:p2.form, state:p2.state, wins:p2.wins, x:+p2.x.toFixed(0) }
+});
+
+phase = 'menu';
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
