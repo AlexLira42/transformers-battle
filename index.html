@@ -61,18 +61,24 @@
           width:calc(var(--b)*1.05);height:calc(var(--s)*.72);
           border-color:rgba(130,240,200,.55);background:rgba(20,60,55,.5)}
 
-  /* верхний ряд: выход в выбор бойца */
-  #bMenu {top:var(--g); right:calc(var(--g)*2 + var(--top));
-          width:calc(var(--top)*1.7);height:var(--top);
-          border-radius:10px;font-size:clamp(10px,1.7vmin,14px);
-          border-color:rgba(255,160,160,.5);background:rgba(60,24,30,.6)}
-
-  #bFull{position:fixed;top:var(--g);right:var(--g);z-index:11;pointer-events:auto;
-    width:var(--top);height:var(--top);border-radius:10px;
+  /* ---------- верхняя панель: звук / выход в меню / фуллскрин ---------- */
+  #topbar{position:fixed;top:var(--g);right:var(--g);z-index:12;
+    display:flex;gap:calc(var(--g)*.5);align-items:center}
+  .tbtn{pointer-events:auto;touch-action:none;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    height:var(--top);min-width:var(--top);padding:0 8px;border-radius:10px;
     background:rgba(20,32,56,.55);border:1px solid rgba(110,170,240,.4);
-    color:#9fb6d8;font-size:clamp(16px,3vmin,24px);display:none;
-    align-items:center;justify-content:center}
-  #pad.on ~ #bFull{display:flex}
+    color:#9fb6d8;font:bold clamp(10px,1.7vmin,14px)/1 "Trebuchet MS",Arial;
+    transition:background .06s,transform .06s}
+  .tbtn.act{background:rgba(70,130,210,.85);transform:scale(.93)}
+  #bSound{font-size:clamp(14px,2.6vmin,20px)}
+  #bSound.off{color:#5b6b8a;border-color:rgba(110,170,240,.2)}
+  #bMenu{border-color:rgba(255,160,160,.5);background:rgba(60,24,30,.6);color:#f0c8c8}
+  #bFull{font-size:clamp(16px,3vmin,24px)}
+  /* выход в меню и фуллскрин — только на сенсорных устройствах */
+  #bMenu,#bFull{display:none}
+  body.touch #bMenu,body.touch #bFull{display:flex}
+  body.touch.atmenu #bMenu{display:none}
 </style>
 </head>
 <body>
@@ -87,9 +93,13 @@
   <div class="btn" id="bHeavy" data-k="KeyK">СИЛЬНЫЙ<span class="lbl">выстрел</span></div>
   <div class="btn sq" id="bTrans" data-k="Space">ТРАНСФОРМ</div>
   <div class="btn sq" id="bSuper" data-k="KeyL">СУПЕР</div>
-  <div class="btn sq" id="bMenu"  data-k="Escape">МЕНЮ</div>
 </div>
-<div id="bFull">⛶</div>
+
+<div id="topbar">
+  <div class="tbtn" id="bSound" title="Звук (M)">🔊</div>
+  <div class="tbtn" id="bMenu" data-k="Escape">МЕНЮ</div>
+  <div class="tbtn" id="bFull">⛶</div>
+</div>
 <script>
 (() => {
 "use strict";
@@ -113,6 +123,157 @@ addEventListener('keyup', e => { keys[e.code] = false; });
 const pressed = c => !!keys[c + '_p'];
 const clearPresses = () => { for (const k in keys) if (k.endsWith('_p')) keys[k] = false; };
 let IS_TOUCH = false;                          // включается ниже, меняет подсказки на экранах
+
+/* ============================================ ЗВУК: FM-синтез в духе Mega Drive
+   Ничего не грузим — все тембры считаются на лету через Web Audio.            */
+const AUDIO = (() => {
+  let ctx = null, master, musGain, sfxGain, noiseBuf;
+  let enabled = true, timer = null;
+  let step = 0, nextTime = 0, track = 'menu';
+
+  const nf = m => 440 * Math.pow(2, (m - 69) / 12);       // midi → Гц
+
+  // 16 шестнадцатых на такт; prog — сдвиг в полутонах по тактам (i–VI–VII–i)
+  const TRACKS = {
+    menu: { bpm:112, prog:[0,-4,-2,0],
+      bass: [33, 0, 0, 0, 33, 0, 0, 0, 36, 0, 0, 0, 33, 0, 0, 0],
+      lead: [ 0, 0,69, 0,  0, 0,72, 0,  0, 0,76, 0,  0, 0,74, 0],
+      kick: [ 1, 0, 0, 0,  0, 0, 0, 0,  1, 0, 0, 0,  0, 0, 0, 0],
+      snare:[ 0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0],
+      hat:  [ 0, 0, 1, 0,  0, 0, 1, 0,  0, 0, 1, 0,  0, 0, 1, 0] },
+    battle:{ bpm:154, prog:[0,0,-4,-2],
+      bass: [33,33, 0,33, 36, 0,33, 0, 33,33, 0,33, 40, 0,38, 0],
+      lead: [69, 0,72,69, 76, 0,74, 0, 72, 0,69,72, 67, 0,69, 0],
+      kick: [ 1, 0, 0, 0,  0, 0, 1, 0,  1, 0, 0, 0,  0, 0, 1, 0],
+      snare:[ 0, 0, 0, 0,  1, 0, 0, 0,  0, 0, 0, 0,  1, 0, 0, 0],
+      hat:  [ 1, 0, 1, 0,  1, 0, 1, 1,  1, 0, 1, 0,  1, 0, 1, 1] }
+  };
+
+  function init() {
+    if (ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    ctx = new AC();
+    master  = ctx.createGain(); master.gain.value = .9;  master.connect(ctx.destination);
+    musGain = ctx.createGain(); musGain.gain.value = .26; musGain.connect(master);
+    sfxGain = ctx.createGain(); sfxGain.gain.value = .8;  sfxGain.connect(master);
+    const n = ctx.sampleRate, buf = ctx.createBuffer(1, n, n), d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    noiseBuf = buf;
+    timer = setInterval(sched, 25);
+  }
+
+  /* --- голоса ------------------------------------------------------------ */
+  // 2-операторная FM: модулятор качает частоту несущей — узнаваемый тембр Genesis
+  function fm(freq, t, dur, ratio, index, vol, dest) {
+    const car = ctx.createOscillator(), mod = ctx.createOscillator();
+    const mg = ctx.createGain(), g = ctx.createGain();
+    car.frequency.value = freq; mod.frequency.value = freq * ratio;
+    mg.gain.setValueAtTime(index, t);
+    mg.gain.exponentialRampToValueAtTime(.5, t + dur * .9);
+    mod.connect(mg); mg.connect(car.frequency);
+    g.gain.setValueAtTime(.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + .008);
+    g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    car.connect(g); g.connect(dest || musGain);
+    car.start(t); mod.start(t); car.stop(t + dur + .03); mod.stop(t + dur + .03);
+  }
+  function tone(t, f0, f1, dur, vol, type, dest) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type || 'square';
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+    g.gain.setValueAtTime(.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + .006);
+    g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    o.connect(g); g.connect(dest || sfxGain);
+    o.start(t); o.stop(t + dur + .03);
+  }
+  function noise(t, dur, vol, f0, f1, type) {
+    const s = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+    s.buffer = noiseBuf; s.playbackRate.value = .8 + Math.random() * .4;
+    f.type = type || 'bandpass'; f.Q.value = 1.1;
+    f.frequency.setValueAtTime(f0, t);
+    f.frequency.exponentialRampToValueAtTime(Math.max(60, f1 || f0), t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    s.connect(f); f.connect(g); g.connect(sfxGain);
+    s.start(t); s.stop(t + dur + .03);
+  }
+  const kick  = t => { tone(t, 150, 42, .14, .9, 'sine', musGain); noise(t, .03, .12, 900); };
+  const snare = t => { noise(t, .13, .3, 1900, 900, 'highpass'); tone(t, 320, 180, .07, .18, 'triangle', musGain); };
+  const hat   = t => noise(t, .035, .09, 8000, 7000, 'highpass');
+
+  /* --- секвенсор --------------------------------------------------------- */
+  function sched() {
+    if (!ctx || ctx.state !== 'running') return;
+    const T = TRACKS[track], spb = 60 / T.bpm / 4;
+    if (nextTime < ctx.currentTime) nextTime = ctx.currentTime + .05;
+    while (nextTime < ctx.currentTime + .15) {
+      const i = step % 16, tr = T.prog[Math.floor(step / 16) % 4];
+      if (T.bass[i])  fm(nf(T.bass[i] + tr), nextTime, spb * 1.7, 2, 160, .5);
+      if (T.lead[i])  fm(nf(T.lead[i] + tr), nextTime, spb * 1.3, 3, 110, .12);
+      if (T.kick[i])  kick(nextTime);
+      if (T.snare[i]) snare(nextTime);
+      if (T.hat[i])   hat(nextTime);
+      nextTime += spb; step++;
+    }
+  }
+
+  const now = () => ctx.currentTime;
+  const ok  = () => ctx && enabled && ctx.state === 'running';
+
+  return {
+    unlock() { init(); if (ctx && ctx.state === 'suspended') ctx.resume(); },
+    get enabled() { return enabled; },
+    toggle() {
+      enabled = !enabled;
+      if (ctx) master.gain.setTargetAtTime(enabled ? .9 : 0, ctx.currentTime, .02);
+      return enabled;
+    },
+    setTrack(name) {
+      if (track === name) return;
+      track = name; step = 0;
+      if (ctx) nextTime = ctx.currentTime + .05;
+    },
+    /* --- эффекты --------------------------------------------------------- */
+    hit(power, heavy) {                       // power 0..1
+      if (!ok()) return; const t = now();
+      noise(t, .10 + power * .14, .55, 1500 - power * 800, 240);
+      tone(t, 260 - power * 110, 46, .13 + power * .1, .5, 'square');
+      if (heavy) tone(t + .01, 90, 38, .26, .42, 'sawtooth');
+    },
+    block() { if (!ok()) return; const t = now();
+      noise(t, .09, .35, 5200, 3000, 'bandpass'); tone(t, 1250, 720, .09, .22, 'square'); },
+    swing(heavy) { if (!ok()) return; const t = now();
+      noise(t, heavy ? .13 : .08, heavy ? .16 : .1, heavy ? 900 : 1500, 320, 'bandpass'); },
+    shoot() { if (!ok()) return; const t = now();
+      tone(t, 1500, 240, .16, .34, 'square'); tone(t + .01, 760, 150, .13, .18, 'sawtooth'); },
+    ram()   { if (!ok()) return; const t = now();
+      noise(t, .34, .34, 420, 110, 'lowpass'); tone(t, 120, 55, .3, .3, 'sawtooth'); },
+    jump()  { if (!ok()) return; tone(now(), 300, 760, .1, .22, 'square'); },
+    transform() {                              // тот самый «вз-з-зьють»
+      if (!ok()) return; const t = now();
+      noise(t, .28, .3, 600, 5200, 'bandpass');
+      for (let i = 0; i < 5; i++) tone(t + i * .045, 320 + i * 190, 520 + i * 230, .07, .2, 'square');
+    },
+    superHit() { if (!ok()) return; const t = now();
+      noise(t, .5, .5, 2600, 200, 'lowpass');
+      [0, 4, 7, 12].forEach((s, i) => fm(nf(57 + s), t + i * .035, .55, 2, 320, .32, sfxGain));
+      tone(t + .05, 180, 40, .5, .4, 'sawtooth');
+    },
+    ko() { if (!ok()) return; const t = now();
+      tone(t, 420, 60, .55, .38, 'square'); noise(t, .45, .3, 800, 120, 'lowpass'); },
+    blip(hi) { if (!ok()) return; tone(now(), hi ? 880 : 560, hi ? 1180 : 700, .06, .2, 'square'); },
+    fanfare() { if (!ok()) return; const t = now();
+      [64, 69, 76].forEach((m, i) => fm(nf(m), t + i * .07, .3, 2, 180, .3, sfxGain)); },
+    jingle(win) {
+      if (!ok()) return; const t = now();
+      const notes = win ? [69, 72, 76, 81] : [69, 67, 64, 60];
+      notes.forEach((m, i) => fm(nf(m), t + i * .16, .4, 2, 150, .34, sfxGain));
+    }
+  };
+})();
 
 /* ------------------------------------------------------------- ростер */
 const CHARS = {
@@ -223,12 +384,12 @@ function startRound() {
 function tryAttack(f, kind) {
   if (f.busy || !f.canAct) return;
   if (f.form === 'robot') {
-    if (kind === 'light') f.enter('attack', ATK.light.start+ATK.light.active+ATK.light.end, 'light');
-    if (kind === 'heavy') f.enter('attack', ATK.heavy.start+ATK.heavy.active+ATK.heavy.end, 'heavy');
+    if (kind === 'light') { f.enter('attack', ATK.light.start+ATK.light.active+ATK.light.end, 'light'); AUDIO.swing(false); }
+    if (kind === 'heavy') { f.enter('attack', ATK.heavy.start+ATK.heavy.active+ATK.heavy.end, 'heavy'); AUDIO.swing(true); }
   } else {
-    if (kind === 'light') { f.enter('ram', .45); f.vx = f.facing * 660; }
+    if (kind === 'light') { f.enter('ram', .45); f.vx = f.facing * 660; AUDIO.ram(); }
     if (kind === 'heavy' && f.shootCd <= 0) {
-      f.shootCd = f.def.rapid ? .27 : .55;
+      f.shootCd = f.def.rapid ? .27 : .55; AUDIO.shoot();
       bullets.push({ x:f.x + f.facing*44, y:f.y - 52, vx:f.facing*700, owner:f,
                      dmg:(f.def.rapid ? 5 : 8) * f.def.pow, life:1.4, col:f.def.beam });
     }
@@ -239,10 +400,12 @@ function trySuper(f) {
   f.energy = 0; f.vx = 0; f.form = 'robot';
   f.enter('super', ATK.super.start+ATK.super.active+ATK.super.end, 'super');
   flashScreen = .35; shake = Math.max(shake, 16);
+  AUDIO.superHit();
 }
 function tryTransform(f) {
   if (f.busy || f.tfCd > 0 || !f.canAct) return;
   f.enter('transform', .26); f.tfCd = 1.2; f.vx = 0;
+  AUDIO.transform();
 }
 
 function damage(target, src, dmg, kb, ky, stun) {
@@ -259,12 +422,16 @@ function damage(target, src, dmg, kb, ky, stun) {
   target.energy = Math.min(100, target.energy + real * 0.9);
   shake = Math.max(shake, blocked ? 4 : Math.min(18, 4 + real));
   hitStop = Math.max(hitStop, blocked ? .02 : .055);
+  if (blocked) AUDIO.block(); else AUDIO.hit(Math.min(1, real / 20), stun > .35);
   const hx = (target.x + src.x)/2, hy = target.y - target.h*0.7;
   for (let i = 0; i < (blocked ? 6 : 16); i++)
     parts.push({ x:hx, y:hy, vx:(Math.random()-.5)*420, vy:(Math.random()-.7)*380,
       life:.35+Math.random()*.3, col: blocked ? '#8fd0ff' : (Math.random()<.5?'#ffd36e':'#ff7a3d'),
       s:2+Math.random()*3 });
-  if (target.hp <= 0) { target.enter('ko', 99); target.vy = -420; target.vx = Math.sign(target.x-src.x||1)*260; }
+  if (target.hp <= 0) {
+    target.enter('ko', 99); target.vy = -420; target.vx = Math.sign(target.x-src.x||1)*260;
+    AUDIO.ko();
+  }
 }
 
 /* ---------------------------------------------------------------- AI */
@@ -403,7 +570,9 @@ function playerInput(f, dt) {
   }
   if (up) {
     if (f.flying) f.vy = Math.max(f.vy - 2600 * dt, -430);                       // тяга джета
-    else if (f.onGround && f.form === 'robot' && !f.blocking) { f.vy = -f.def.jump; f.onGround = false; }
+    else if (f.onGround && f.form === 'robot' && !f.blocking) {
+      f.vy = -f.def.jump; f.onGround = false; AUDIO.jump();
+    }
   }
   if (pressed('KeyJ')) tryAttack(f, 'light');
   if (pressed('KeyK')) tryAttack(f, 'heavy');
@@ -785,13 +954,14 @@ function drawMenu() {
         'Слева — движение и БЛОК, справа — атаки',
         'УДАР (в транспорте — таран) · СИЛЬНЫЙ (в транспорте — выстрел)',
         'ТРАНСФОРМ — смена формы · СУПЕР — при полном энергоне',
-        '⛶ в углу — на весь экран' ]
+        '⛶ — на весь экран · 🔊 — звук' ]
     : [ '5 персонажей · матч до 2 побед · раунд 60 сек',
         '',
         'A / D — движение     W — прыжок (в джете — тяга)     S — блок',
         'J — быстрый удар (в транспорте: ТАРАН)',
         'K — тяжёлый удар (в транспорте: ВЫСТРЕЛ)',
-        'ПРОБЕЛ — ТРАНСФОРМАЦИЯ     L — суперудар при полном энергоне' ]
+        'ПРОБЕЛ — ТРАНСФОРМАЦИЯ     L — суперудар при полном энергоне',
+        'M — включить / выключить звук' ]
   ).forEach((t,i) => X.fillText(t, W/2, 192 + i*24));
   // превью ростера — отдельной полосой, ниже текста
   ROSTER.forEach((id,i) => {
@@ -866,18 +1036,19 @@ function update(dt) {
     if (pressed('Digit1')) diffIdx = 0;
     if (pressed('Digit2')) diffIdx = 1;
     if (pressed('Digit3')) diffIdx = 2;
-    if (pressed('KeyA') || pressed('ArrowLeft'))  diffIdx = Math.max(0, diffIdx-1);
-    if (pressed('KeyD') || pressed('ArrowRight')) diffIdx = Math.min(DIFFS.length-1, diffIdx+1);
-    if (pressed('Enter')) { phase='select'; selStep=0; }
+    if (pressed('KeyA') || pressed('ArrowLeft'))  { diffIdx = Math.max(0, diffIdx-1); AUDIO.blip(); }
+    if (pressed('KeyD') || pressed('ArrowRight')) { diffIdx = Math.min(DIFFS.length-1, diffIdx+1); AUDIO.blip(); }
+    if (pressed('Enter')) { phase='select'; selStep=0; AUDIO.blip(true); }
     return;
   }
 
   if (phase === 'select') {
-    if (pressed('KeyA') || pressed('ArrowLeft'))  selIdx[selStep] = (selIdx[selStep]+ROSTER.length-1)%ROSTER.length;
-    if (pressed('KeyD') || pressed('ArrowRight')) selIdx[selStep] = (selIdx[selStep]+1)%ROSTER.length;
-    if (pressed('KeyR')) selIdx[selStep] = Math.floor(Math.random()*ROSTER.length);
-    if (pressed('Escape')) { if (selStep === 1) selStep = 0; else phase = 'menu'; }
+    if (pressed('KeyA') || pressed('ArrowLeft'))  { selIdx[selStep] = (selIdx[selStep]+ROSTER.length-1)%ROSTER.length; AUDIO.blip(); }
+    if (pressed('KeyD') || pressed('ArrowRight')) { selIdx[selStep] = (selIdx[selStep]+1)%ROSTER.length; AUDIO.blip(); }
+    if (pressed('KeyR')) { selIdx[selStep] = Math.floor(Math.random()*ROSTER.length); AUDIO.blip(); }
+    if (pressed('Escape')) { if (selStep === 1) selStep = 0; else phase = 'menu'; AUDIO.blip(); }
     if (pressed('Enter') || pressed('KeyJ')) {
+      AUDIO.blip(true);
       if (selStep === 0) { selStep = 1; if (selIdx[1] === selIdx[0]) selIdx[1] = (selIdx[0]+2)%ROSTER.length; }
       else newMatch();
     }
@@ -891,7 +1062,7 @@ function update(dt) {
   }
   if (phase === 'ready') {
     phaseT -= dt;
-    if (phaseT <= 0) { phase='fight'; msg='В БОЙ!'; msgSub=''; phaseT=.7; }
+    if (phaseT <= 0) { phase='fight'; msg='В БОЙ!'; msgSub=''; phaseT=.7; AUDIO.fanfare(); }
     return;
   }
   if (phase === 'fight') {
@@ -920,6 +1091,7 @@ function update(dt) {
     if (phaseT <= 0) {
       if (p1.wins >= BEST_OF || p2.wins >= BEST_OF) {
         const win = p1.wins >= BEST_OF;
+        AUDIO.jingle(win);
         msg = win ? 'ТЫ ПОБЕДИЛ' : 'ТЫ ПРОИГРАЛ';
         msgSub = IS_TOUCH ? 'ТАП по экрану — новый бой   ·   МЕНЮ — выбор бойца'
                           : 'ENTER — новый бой   ·   ESC — выбор бойца';
@@ -959,10 +1131,10 @@ function loop(now) {
   shake = Math.max(0, shake - dt*60);
   flashScreen = Math.max(0, flashScreen - dt*2.2);
   update(dt); render(); clearPresses();
-  if (IS_TOUCH) {
-    pad.classList.toggle('play', phase === 'ready' || phase === 'fight' || phase === 'roundEnd');
-    pad.classList.toggle('atmenu', phase === 'menu');
-  }
+  const playing = phase === 'ready' || phase === 'fight' || phase === 'roundEnd';
+  AUDIO.setTrack(playing || phase === 'matchEnd' ? 'battle' : 'menu');
+  if (IS_TOUCH) pad.classList.toggle('play', playing);
+  document.body.classList.toggle('atmenu', phase === 'menu');
   requestAnimationFrame(loop);
 }
 
@@ -975,9 +1147,24 @@ const GAME = {
 const pad = document.getElementById('pad');
 IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window
         || new URLSearchParams(location.search).has('pad');
-if (IS_TOUCH) pad.classList.add('on');
+if (IS_TOUCH) { pad.classList.add('on'); document.body.classList.add('touch'); }
 
-pad.querySelectorAll('[data-k]').forEach(b => {
+// звук включается только после первого действия пользователя (политика браузеров)
+const unlockAudio = () => AUDIO.unlock();
+addEventListener('pointerdown', unlockAudio);
+addEventListener('keydown', unlockAudio);
+
+const bSound = document.getElementById('bSound');
+const toggleSound = () => {
+  AUDIO.unlock();
+  const on = AUDIO.toggle();
+  bSound.textContent = on ? '🔊' : '🔇';
+  bSound.classList.toggle('off', !on);
+};
+bSound.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); toggleSound(); });
+addEventListener('keydown', e => { if (e.code === 'KeyM') toggleSound(); });
+
+document.querySelectorAll('[data-k]').forEach(b => {
   const code = b.dataset.k;
   const down = e => { e.preventDefault(); b.classList.add('act'); GAME.press(code); };
   const up   = e => { e.preventDefault(); b.classList.remove('act'); GAME.release(code); };
