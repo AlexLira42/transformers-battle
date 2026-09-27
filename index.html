@@ -737,18 +737,32 @@ function drawHud() {
 
 function drawCenterMsg() {
   if (!msg) return;
-  X.textAlign='center'; X.font='bold 62px Trebuchet MS';
-  X.fillStyle='rgba(0,0,0,.55)'; X.fillText(msg, W/2+3, H/2-16+3);
-  X.fillStyle='#ffe066'; X.fillText(msg, W/2, H/2-16);
-  if (msgSub){ X.font='bold 20px Trebuchet MS'; X.fillStyle='#cdd6e4'; X.fillText(msgSub, W/2, H/2+22); }
+  X.textAlign = 'center';
+  X.font = 'bold 62px Trebuchet MS';
+  const w1 = X.measureText(msg).width;
+  X.font = 'bold 20px Trebuchet MS';
+  const w2 = msgSub ? X.measureText(msgSub).width : 0;
+
+  // подложка, чтобы крупные бойцы не «съедали» текст
+  const pw = Math.max(w1, w2) + 70, ph = msgSub ? 108 : 80, px = W/2 - pw/2, py = 148;
+  X.fillStyle = 'rgba(6,10,20,.74)'; X.fillRect(px, py, pw, ph);
+  X.strokeStyle = 'rgba(120,170,240,.32)'; X.lineWidth = 2; X.strokeRect(px, py, pw, ph);
+
+  X.font = 'bold 62px Trebuchet MS';
+  X.fillStyle = 'rgba(0,0,0,.55)'; X.fillText(msg, W/2 + 3, py + 63);
+  X.fillStyle = '#ffe066';         X.fillText(msg, W/2,     py + 60);
+  if (msgSub) {
+    X.font = 'bold 20px Trebuchet MS'; X.fillStyle = '#cdd6e4';
+    X.fillText(msgSub, W/2, py + 94);
+  }
 }
 
 /* ------------------------------------------------------- экраны меню */
 function drawMenu() {
   drawBg();
   X.textAlign='center';
-  X.font='bold 52px Trebuchet MS'; X.fillStyle='#4ec8ff'; X.fillText('TRANSFORMERS', W/2, 132);
-  X.font='bold 26px Trebuchet MS'; X.fillStyle='#d0332f'; X.fillText('BATTLE FOR CYBERTRON', W/2, 166);
+  X.font='bold 52px Trebuchet MS'; X.fillStyle='#4ec8ff'; X.fillText('TRANSFORMERS', W/2, 108);
+  X.font='bold 26px Trebuchet MS'; X.fillStyle='#d0332f'; X.fillText('BATTLE FOR CYBERTRON', W/2, 142);
   X.font='16px Trebuchet MS'; X.fillStyle='#cdd6e4';
   (IS_TOUCH
     ? [ '5 персонажей · матч до 2 побед · раунд 60 сек',
@@ -763,21 +777,21 @@ function drawMenu() {
         'J — быстрый удар (в транспорте: ТАРАН)',
         'K — тяжёлый удар (в транспорте: ВЫСТРЕЛ)',
         'ПРОБЕЛ — ТРАНСФОРМАЦИЯ     L — суперудар при полном энергоне' ]
-  ).forEach((t,i) => X.fillText(t, W/2, 232 + i*26));
+  ).forEach((t,i) => X.fillText(t, W/2, 192 + i*24));
+  // превью ростера — отдельной полосой, ниже текста
+  ROSTER.forEach((id,i) => {
+    X.save(); X.translate(150 + i*165, 398); X.scale(.42,.42);
+    drawRobotRig(CHARS[id], { bob: Math.sin(TNOW*2 + i)*2 }); X.restore();
+  });
   X.font='bold 15px Trebuchet MS';
   DIFFS.forEach((d,i) => {
     const x = W/2 - 150 + i*150;
     X.fillStyle = i === diffIdx ? '#ffe066' : '#5b6b8a';
-    X.fillText((i+1) + ' · ' + d.n, x, 418);
-    if (i === diffIdx) { X.strokeStyle='#ffe066'; X.lineWidth=1.5; X.strokeRect(x-58,402,116,22); }
+    X.fillText((i+1) + ' · ' + d.n, x, 440);
+    if (i === diffIdx) { X.strokeStyle='#ffe066'; X.lineWidth=1.5; X.strokeRect(x-58,424,116,22); }
   });
   X.font='bold 22px Trebuchet MS'; X.fillStyle='#ffe066';
-  X.fillText(IS_TOUCH ? 'ТАП ПО ЭКРАНУ — ВЫБОР БОЙЦА' : 'ENTER — ВЫБОР БОЙЦА', W/2, 460);
-  // превью ростера
-  ROSTER.forEach((id,i) => {
-    X.save(); X.translate(150 + i*165, 392); X.scale(.34,.34);
-    drawRobotRig(CHARS[id], { bob: Math.sin(TNOW*2 + i)*2 }); X.restore();
-  });
+  X.fillText(IS_TOUCH ? 'ТАП ПО ЭКРАНУ — ВЫБОР БОЙЦА' : 'ENTER — ВЫБОР БОЙЦА', W/2, 484);
 }
 
 function statBar(x,y,w,v,col) {
@@ -955,7 +969,7 @@ CV.addEventListener('pointerdown', e => {
 
   if (phase === 'menu') {
     e.preventDefault();
-    if (cy > 396 && cy < 432) {                       // полоса выбора сложности
+    if (cy > 420 && cy < 452) {                       // полоса выбора сложности
       const i = Math.round((cx - (W/2 - 150)) / 150);
       if (i >= 0 && i < DIFFS.length) { diffIdx = i; return; }
     }
